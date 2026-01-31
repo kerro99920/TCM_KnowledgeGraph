@@ -1,6 +1,7 @@
 # Web 框架
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
+streamlit>=1.30.0
 
 # LLM 和 AI
 langchain>=0.3.0
