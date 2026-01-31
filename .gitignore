@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Model files (too large, download separately)
+model/bge-m3/
+
+# Crawler data (can be regenerated)
+crawler/medicine_details/
+crawler/medicine_details_2/
+crawler/medicine_details_3/
+crawler/prescription_details/
+crawler/prescription_details_2/
+crawler/*.xlsx
+
+# Generated data
+extraction/*.json
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Claude config
+.claude/
+
+# Logs
+*.log
+logs/
