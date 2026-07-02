@@ -1,179 +1,93 @@
-"""Prompt templates for LLM-based information extraction."""
+"""LLM 提示词模板（全部基于统一 schema 生成）。"""
+
+from tcm_kgraph.graph_schema import schema_prompt
 
 
 class ExtractionPrompts:
-    """Collection of prompt templates for TCM entity and relation extraction."""
+    """中医知识抽取与问答提示词集合。"""
 
-    SYSTEM_PROMPT = """你是一个专业的中医知识图谱信息抽取助手。你的任务是从中医药文本中提取结构化的实体和关系信息。
+    SYSTEM_PROMPT = (
+        "你是一个专业的中医知识图谱助手。"
+        "请严格按照要求的JSON格式输出，不要添加任何额外的文字说明。"
+    )
 
-请严格按照要求的JSON格式输出，不要添加任何额外的文字说明。"""
+    # 三元组抽取（构图用）
+    TRIPLE_EXTRACTION = """你是一个中医知识图谱抽取专家。请从以下文本中提取结构化知识。
+仅当文本中存在实体之间的明确关系时才进行抽取；若只描述单个实体、无关系，返回空结构：
+{{"entities": [], "relations": []}}
 
-    MEDICINE_EXTRACTION = """请从以下中药文本中提取结构化信息：
+【图谱 Schema】
+{schema}
 
-{text}
+抽取要求：
+1. 实体 type 必须严格使用上述节点标签，关系 relation 必须严格使用上述关系类型。
+2. Herb/Formula 实体可带 attributes（属性名严格使用 schema 中列出的属性）。
+3. 文本主要讲方剂时不抽取药材属性，主要讲药材时不抽取方剂属性。
+4. 属性值为空时省略该键。
 
-请提取以下字段，并以JSON格式返回：
-- name: 药名（必填）
-- aliases: 别名列表
-- pinyin: 拼音名
-- nature: 药性（寒/热/温/凉/平）
-- flavors: 药味列表（酸/苦/甘/辛/咸等）
-- meridians: 归经列表
-- functions: 功效列表
-- indications: 主治列表
-- usage: 用法用量
-- contraindications: 禁忌列表
-- source: 来源/基原
-
-输出格式示例：
-```json
-{{
-  "name": "黄芪",
-  "aliases": ["黄耆", "绵芪"],
-  "pinyin": "Huang Qi",
-  "nature": "温",
-  "flavors": ["甘"],
-  "meridians": ["肺经", "脾经"],
-  "functions": ["补气升阳", "固表止汗", "利水消肿", "生津养血", "托毒生肌"],
-  "indications": ["气虚乏力", "食少便溏", "中气下陷", "久泻脱肛"],
-  "usage": "9-30g",
-  "contraindications": ["表实邪盛", "气滞湿阻", "食积停滞"],
-  "source": "豆科植物蒙古黄芪或膜荚黄芪的干燥根"
-}}
-```"""
-
-    PRESCRIPTION_EXTRACTION = """请从以下方剂文本中提取结构化信息：
-
-{text}
-
-请提取以下字段，并以JSON格式返回：
-- name: 方剂名（必填）
-- aliases: 别名列表
-- pinyin: 拼音名
-- source_book: 出处/来源书籍
-- composition: 组成列表，每个元素包含 medicine_name（药名）和 dosage（剂量）
-- functions: 功效列表
-- indications: 主治列表
-- dosage: 用法用量
-- contraindications: 禁忌列表
-- formula_explanation: 方解
-
-输出格式示例：
-```json
-{{
-  "name": "四君子汤",
-  "aliases": [],
-  "pinyin": "Si Jun Zi Tang",
-  "source_book": "《太平惠民和剂局方》",
-  "composition": [
-    {{"medicine_name": "人参", "dosage": "10g"}},
-    {{"medicine_name": "白术", "dosage": "9g"}},
-    {{"medicine_name": "茯苓", "dosage": "9g"}},
-    {{"medicine_name": "甘草", "dosage": "6g"}}
-  ],
-  "functions": ["益气健脾"],
-  "indications": ["脾胃气虚证", "面色萎白", "语声低微", "食少便溏"],
-  "dosage": "水煎服",
-  "contraindications": ["阴虚内热者慎用"],
-  "formula_explanation": "方中人参甘温，益气补中为君；白术健脾燥湿为臣..."
-}}
-```"""
-
-    RELATION_EXTRACTION = """请从以下中医文本中提取实体关系：
-
-{text}
-
-请识别以下类型的关系：
-1. 治疗关系：中药/方剂 -> 治疗 -> 疾病/症状
-2. 组成关系：方剂 -> 包含 -> 中药
-3. 归经关系：中药 -> 归 -> 经络
-4. 配伍关系：中药 -> 配伍 -> 中药（相须/相使/相畏/相杀/相恶/相反）
-5. 禁忌关系：中药/方剂 -> 禁用于 -> 证候/人群
-
-请以JSON格式返回关系列表：
-```json
-{{
-  "relations": [
-    {{
-      "source": "黄芪",
-      "source_type": "Medicine",
-      "relation": "TREATS",
-      "target": "气虚乏力",
-      "target_type": "Symptom",
-      "properties": {{}}
-    }},
-    {{
-      "source": "四君子汤",
-      "source_type": "Prescription",
-      "relation": "CONTAINS",
-      "target": "人参",
-      "target_type": "Medicine",
-      "properties": {{"dosage": "10g", "role": "君药"}}
-    }}
-  ]
-}}
-```"""
-
-    ENTITY_LINKING = """请将以下中医术语标准化并链接到标准实体：
-
-术语列表：
-{terms}
-
-对于每个术语，请识别其类型并提供标准名称：
-- Medicine（中药）
-- Prescription（方剂）
-- Disease（疾病）
-- Symptom（症状）
-- Meridian（经络）
-- Syndrome（证候）
-
-输出格式：
+输出 JSON 格式：
 ```json
 {{
   "entities": [
-    {{
-      "original": "参",
-      "standard_name": "人参",
-      "type": "Medicine",
-      "confidence": 0.95
-    }},
-    {{
-      "original": "四君子",
-      "standard_name": "四君子汤",
-      "type": "Prescription",
-      "confidence": 0.98
-    }}
+    {{"name": "四君子汤", "type": "Formula", "attributes": {{"effect": "益气健脾"}}}},
+    {{"name": "人参", "type": "Herb"}}
+  ],
+  "relations": [
+    {{"subject": "四君子汤", "subject_type": "Formula", "relation": "HAS_INGREDIENT", "object": "人参", "object_type": "Herb"}}
   ]
 }}
-```"""
+```
 
-    QUESTION_TO_CYPHER = """你是一个Neo4j Cypher查询专家。请将用户的自然语言问题转换为Cypher查询。
+输入文本：
+{text}"""
 
-知识图谱结构：
-- 节点类型：Medicine（中药）, Prescription（方剂）, Disease（疾病）, Symptom（症状）
-- 关系类型：
-  - TREATS: 中药/方剂 -> 疾病/症状
-  - CONTAINS: 方剂 -> 中药（属性：dosage剂量, role角色）
-  - ENTERS_MERIDIAN: 中药 -> 经络
-  - CONTRAINDICATED_WITH: 中药 -> 中药（配伍禁忌）
+    # 问题实体识别（问答链路用）
+    QUESTION_ENTITY_EXTRACTION = """从以下中医问题中识别实体：
+
+问题：{question}
+
+实体类型仅限：Herb（中药材）、Formula（方剂）、Disease（疾病）、Symptom（症状）、Effect（功效）、Source（文献）。
+
+以JSON返回：
+```json
+{{"entities": [{{"name": "黄芪", "type": "Herb"}}, {{"name": "气虚", "type": "Symptom"}}]}}
+```
+
+只返回JSON，不要其他内容。"""
+
+    # Text2Cypher（只读查询生成）
+    QUESTION_TO_CYPHER = """你是Neo4j Cypher查询专家。请将用户问题转换为只读Cypher查询。
+
+【图谱 Schema】
+{schema}
+
+硬性约束：
+1. 只允许读查询（MATCH/OPTIONAL MATCH/WHERE/RETURN/WITH/UNWIND/ORDER BY/LIMIT）。
+2. 禁止 CREATE/MERGE/DELETE/SET/REMOVE/CALL 等任何写操作或过程调用。
+3. 节点标签与关系类型只能使用上述 Schema 中列出的。
+4. 必须带 LIMIT（不超过 25）。
+5. 实体名精确匹配用 {{name: '...'}}，不确定时用 CONTAINS 模糊匹配。
+
+示例：
+- 问："四君子汤由哪些药组成？"
+  cypher: "MATCH (f:Formula {{name: '四君子汤'}})-[:HAS_INGREDIENT]->(h:Herb) RETURN h.name LIMIT 25"
+- 问："哪些方剂能治感冒？"
+  cypher: "MATCH (f:Formula)-[:TREATS_DISEASE]->(d:Disease) WHERE d.name CONTAINS '感冒' RETURN f.name, d.name LIMIT 25"
 
 用户问题：{question}
 
-请返回Cypher查询和解释：
+以JSON返回：
 ```json
-{{
-  "cypher": "MATCH (m:Medicine) WHERE m.name = '黄芪' RETURN m",
-  "explanation": "查找名为黄芪的中药实体"
-}}
+{{"cypher": "...", "explanation": "..."}}
 ```"""
 
+    # 问答生成
     TCM_QA_SYSTEM = """你是一个专业的中医知识问答助手。请基于提供的知识图谱信息回答用户问题。
 
 回答要求：
-1. 准确引用知识图谱中的信息
-2. 使用专业但易懂的中医术语
-3. 如有需要，提供额外的解释说明
-4. 如果信息不足，请明确说明
+1. 优先引用知识图谱中的信息，并保持准确。
+2. 使用专业但易懂的中医术语。
+3. 如果图谱信息不足，请明确说明并谨慎补充。
 
 知识图谱查询结果：
 {context}
@@ -181,3 +95,19 @@ class ExtractionPrompts:
 用户问题：{question}
 
 请提供专业、准确的回答。"""
+
+    @classmethod
+    def triple_extraction(cls, text: str) -> str:
+        return cls.TRIPLE_EXTRACTION.format(schema=schema_prompt(), text=text)
+
+    @classmethod
+    def question_to_cypher(cls, question: str) -> str:
+        return cls.QUESTION_TO_CYPHER.format(schema=schema_prompt(), question=question)
+
+    @classmethod
+    def question_entities(cls, question: str) -> str:
+        return cls.QUESTION_ENTITY_EXTRACTION.format(question=question)
+
+    @classmethod
+    def qa(cls, context: str, question: str) -> str:
+        return cls.TCM_QA_SYSTEM.format(context=context, question=question)

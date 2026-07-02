@@ -1,173 +1,159 @@
 # TCM Knowledge Graph (中医知识图谱)
 
-基于 LLM 和 Neo4j 的中医知识图谱构建与问答系统。
+基于 LLM + Neo4j 的中医知识图谱构建与问答系统。
 
-## 功能特性
-
-- **数据爬取**: 自动爬取中药、方剂等中医知识数据
-- **知识抽取**: 利用 LLM (通义千问) 从非结构化文本中抽取实体和关系
-- **图谱构建**: 将抽取的知识存储到 Neo4j 图数据库
-- **语义搜索**: 基于 BGE-M3 向量模型的语义检索
-- **智能问答**: 结合知识图谱的 RAG 问答系统
+**单一实现**：核心代码全部在 `app/`（FastAPI + LangGraph Text2Cypher），`frontend/` 是纯 HTTP 薄客户端（Streamlit），不直连数据库或 LLM。
 
 ## 系统架构
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Crawler   │───>│  Extraction │───>│   Neo4j     │
-│   (爬虫)    │    │  (LLM抽取)  │    │   (图数据库) │
-└─────────────┘    └─────────────┘    └─────────────┘
-                                            │
-                                            v
-                   ┌─────────────┐    ┌─────────────┐
-                   │   FastAPI   │<───│  LangGraph  │
-                   │   (API服务) │    │  (智能Agent)│
-                   └─────────────┘    └─────────────┘
+┌──────────┐   ┌───────────────┐   ┌─────────┐
+│ Crawler  │──>│ TripleExtract │──>│ Alpaca  │
+│ (爬虫)   │   │ (LLM 三元组)  │   │  JSON   │
+└──────────┘   └───────────────┘   └────┬────┘
+                                        │ tcm db import-alpaca
+                                        v （实体对齐 + UNWIND/MERGE）
+┌──────────┐   ┌───────────────┐   ┌─────────┐
+│Streamlit │──>│    FastAPI    │──>│  Neo4j  │
+│ (前端)   │HTTP│  + LangGraph  │   │ (图谱)  │
+└──────────┘   │  Text2Cypher  │   └─────────┘
+               │  + CypherGuard│
+               └───────────────┘
 ```
+
+问答链路：意图路由 → 实体识别（别名归一化）→ Text2Cypher（只读校验 + 白名单）→ 图谱增强回答。
 
 ## 快速开始
 
-### 1. 克隆项目
+依赖 [uv](https://docs.astral.sh/uv/)，无需手动创建虚拟环境。
 
 ```bash
-git clone https://github.com/your-username/tcm-knowledge-graph.git
-cd tcm-knowledge-graph
+# 1. 配置环境变量
+cp .env.example .env   # 填入 MODEL_API_KEY / NEO4J_PASSWORD 等
+
+# 2. 启动 Neo4j（本机或 Docker）
+
+# 3. 启动后端 API（http://localhost:8000，文档 /docs）
+uv run --project app tcm serve        # Windows 可直接双击 run_api.bat
+
+# 4. 启动前端（http://localhost:8501）
+uv run --no-project --with "streamlit>=1.35" streamlit run frontend/app.py
+                                      # Windows 可直接双击 run_frontend.bat
 ```
 
-### 2. 安装依赖
+### 数据构建流程
 
 ```bash
-pip install -r requirements.txt
+# 爬取原始文本（可选，已有文本可跳过）
+uv run --project app tcm crawl medicine --limit 100
+
+# LLM 抽取三元组 → Alpaca JSON
+uv run --project app tcm extract triples data/raw/medicines -o data/medicine_alpaca.json
+
+# 导入 Neo4j（实体对齐 + 批量 UNWIND/MERGE，可加 --clear 先清库）
+uv run --project app tcm db import-alpaca data/medicine_alpaca.json
+
+# 查看图谱规模
+uv run --project app tcm db status
 ```
 
-### 3. 配置环境变量
+### CLI 一览
 
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填入你的配置
-```
+| 命令 | 说明 |
+|------|------|
+| `tcm serve` | 启动 FastAPI 服务 |
+| `tcm chat` | 终端交互问答（与 API 同一链路） |
+| `tcm crawl medicine/prescription` | 爬取原始文本 |
+| `tcm extract triples <dir> -o <json>` | 三元组抽取（输出 Alpaca 格式） |
+| `tcm db import-alpaca <json...>` | 导入图谱（`--clear` 先清库） |
+| `tcm db status / query / clear` | 图谱统计 / 只读查询 / 清库 |
 
-### 4. 下载向量模型
+## 统一 Schema
 
-BGE-M3 模型约 2.2GB，需要单独下载：
+唯一权威定义在 `app/src/tcm_kgraph/graph_schema.py`（抽取、导入、Text2Cypher、API 全部引用它）。
 
-```bash
-# 使用 huggingface-cli
-huggingface-cli download BAAI/bge-m3 --local-dir ./model/bge-m3
+### 节点标签（唯一键属性均为 `name`）
 
-# 或使用 modelscope (国内用户推荐)
-modelscope download --model BAAI/bge-m3 --local_dir ./model/bge-m3
-```
+| 标签 | 说明 | 主要属性 |
+|------|------|----------|
+| `Herb` | 中药材 | name, alias, property_flavor(性味), meridian(归经), effect, indication, dosage, usage, taboo, origin, place, processing, traits |
+| `Formula` | 方剂 | name, alias, effect, indication, usage, taboo |
+| `Disease` | 疾病 | name |
+| `Symptom` | 症状 | name |
+| `Effect` | 功效 | name |
+| `Source` | 文献出处 | name |
 
-### 5. 启动 Neo4j
+### 关系类型（方向固定）
 
-确保 Neo4j 数据库已启动，并配置正确的连接信息。
+| 关系 | 三元组模式 | 说明 |
+|------|-----------|------|
+| `HAS_INGREDIENT` | (Formula)→(Herb) | 方剂包含药材（属性 dosage/role） |
+| `TREATS_DISEASE` | (Herb\|Formula)→(Disease) | 治疗疾病 |
+| `ALLEVIATES_SYMPTOM` | (Herb\|Formula)→(Symptom) | 缓解症状 |
+| `HAS_EFFECT` | (Herb\|Formula)→(Effect) | 具有功效 |
+| `HAS_SYMPTOM` | (Disease)→(Symptom) | 疾病表现症状 |
+| `FROM_SOURCE` | (Herb\|Formula)→(Source) | 出自文献 |
 
-### 6. 运行
+### 实体对齐
 
-```bash
-# 爬取数据
-python crawler/crawl_zhongyao.py
-python crawler/crawl_fangji.py
+导入与查询时对实体名做归一化：NFKC → 去空白 → 异体字映射（蔘→参 等）→ 别名表（北芪→黄芪、元胡→延胡索 等），见 `graph_schema.ENTITY_ALIASES`。
 
-# 抽取知识
-python extraction/extract_zhongyao_to_json.py
-python extraction/extract_fangji_to_json.py
+### 安全防线（Text2Cypher）
 
-# 转换为 Alpaca 格式
-python extraction/convert_zhongyao_to_alpaca.py
-python extraction/convert_fangji_to_alpaca.py
+LLM 生成的 Cypher 必须通过 `database/cypher_guard.py` 校验后才执行：
 
-# 导入 Neo4j
-python database/import_alpaca_to_neo4j.py
-```
+- 只读：禁止 CREATE/MERGE/DELETE/SET/REMOVE/CALL/LOAD 等写操作与过程调用；
+- 白名单：节点标签与关系类型必须在统一 schema 内；
+- 兜底：无 LIMIT 自动追加 `LIMIT 50`；拒绝反引号标识符。
+
+`/api/v1/knowledge/query` 与 `tcm db query` 也走同一防线。
+
+## API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/chat` | 智能问答（返回回答 + 实际执行的 Cypher + 来源） |
+| GET | `/api/v1/knowledge/schema` | 统一 schema 定义 |
+| GET | `/api/v1/knowledge/stats` | 图谱规模统计 |
+| GET | `/api/v1/knowledge/entity/{label}/{name}` | 实体详情（含出入边，名称自动对齐） |
+| POST | `/api/v1/knowledge/search` | 名称模糊检索 |
+| POST | `/api/v1/knowledge/query` | 只读 Cypher（经安全校验） |
+| GET | `/health` | 健康检查 |
 
 ## 目录结构
 
 ```
-tcm-knowledge-graph/
-├── .gitignore              # Git 忽略规则
-├── .env.example            # 环境变量模板
-├── README.md               # 项目说明
-├── requirements.txt        # Python 依赖
-├── LICENSE                 # MIT 许可证
-├── common/                 # 公共模块
-│   ├── config.py           # 配置管理
-│   ├── llm.py              # LLM 客户端
-│   ├── neo4j_manager.py    # Neo4j 客户端
-│   ├── embedding_model.py  # 向量嵌入模型
-│   └── path_utils.py       # 路径工具
-├── crawler/                # 爬虫模块
-│   ├── crawl_fangji.py     # 方剂爬虫
-│   ├── crawl_zhongyao.py   # 中药爬虫
-│   └── fetch_*.py          # 页面抓取
-├── extraction/             # 信息提取模块
-│   ├── extract_graph_utils.py      # 知识抽取工具
-│   ├── extract_fangji_to_json.py   # 方剂抽取
-│   ├── extract_zhongyao_to_json.py # 中药抽取
-│   └── convert_*_to_alpaca.py      # 格式转换
-├── database/               # 数据库模块
-│   └── import_alpaca_to_neo4j.py   # Neo4j 导入
-├── examples/               # 示例代码
-│   ├── neo4j_client.py     # Neo4j 使用示例
-│   └── request_test.py     # API 请求测试
-├── model/                  # 模型目录 (gitignore)
-│   └── bge-m3/             # BGE-M3 向量模型
-├── picture/                # 图片资源
-└── app/                    # 主应用模块
-    ├── src/                # 源代码
-    ├── tests/              # 测试代码
-    ├── docker/             # Docker 配置
-    └── pyproject.toml      # 项目配置
+├── .env.example              # 环境变量模板（MODEL_* / NEO4J_*）
+├── run_api.bat / run_frontend.bat
+├── frontend/app.py           # Streamlit 薄客户端（仅 HTTP 调后端）
+├── docs/复习笔记.md          # 知识图谱/Cypher/Text2Cypher 复习笔记
+└── app/                      # 唯一核心实现
+    ├── pyproject.toml
+    ├── src/tcm_kgraph/
+    │   ├── graph_schema.py   # ★ 统一 schema + 别名表 + 白名单
+    │   ├── agents/           # LangGraph 问答工作流
+    │   ├── api/              # FastAPI 路由
+    │   ├── cli/              # typer CLI（serve/chat/crawl/extract/db）
+    │   ├── crawlers/         # 异步爬虫
+    │   ├── database/         # Neo4j 客户端 + cypher_guard 安全防线
+    │   ├── extraction/       # LLM 三元组抽取 + 提示词
+    │   ├── ingest/           # Alpaca JSON 批量导入
+    │   ├── llm/              # LLM 客户端
+    │   └── models/           # API DTO
+    └── tests/                # 单元测试（uv run --no-project --with pytest python -m pytest tests/unit）
 ```
 
-## 配置说明
-
-### 环境变量
+## 环境变量
 
 | 变量名 | 说明 | 示例 |
 |--------|------|------|
-| `MODEL_API_KEY` | 通义千问 API 密钥 | `sk-xxx` |
+| `MODEL_API_KEY` | LLM API 密钥（OpenAI 兼容） | `sk-xxx` |
 | `MODEL_BASE_URL` | API 基础 URL | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 | `MODEL_NAME` | 模型名称 | `qwen3-max` |
 | `NEO4J_URI` | Neo4j 连接地址 | `bolt://localhost:7687` |
-| `NEO4J_USER` | Neo4j 用户名 | `neo4j` |
-| `NEO4J_PASSWORD` | Neo4j 密码 | `your_password` |
-| `EMBEDDING_MODEL_PATH` | 向量模型路径 | `./model/bge-m3` |
-
-## 知识图谱 Schema
-
-### 实体类型
-
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| `Herb` | 中药材 | 人参、黄芪 |
-| `Formula` | 方剂 | 四君子汤、桂枝汤 |
-| `Disease` | 疾病 | 感冒、肺炎 |
-| `Symptom` | 症状 | 咳嗽、发热 |
-| `Effect` | 功效 | 补气、活血 |
-| `Source` | 出处 | 《本草纲目》 |
-
-### 关系类型
-
-| 关系 | 说明 | 示例 |
-|------|------|------|
-| `TREATS_DISEASE` | 治疗疾病 | 桂枝汤 → 感冒 |
-| `ALLEVIATES_SYMPTOM` | 缓解症状 | 人参 → 乏力 |
-| `HAS_EFFECT` | 具有功效 | 黄芪 → 补气 |
-| `HAS_INGREDIENT` | 包含成分 | 四君子汤 → 人参 |
-| `HAS_SYMPTOM` | 具有症状 | 感冒 → 发热 |
-| `FROM_SOURCE` | 出自文献 | 桂枝汤 → 《伤寒论》 |
-
-## 技术栈
-
-- **LLM**: 通义千问 (Qwen)
-- **向量模型**: BGE-M3
-- **图数据库**: Neo4j
-- **Web 框架**: FastAPI
-- **Agent 框架**: LangGraph
-- **编程语言**: Python 3.10+
+| `NEO4J_USER` / `NEO4J_PASSWORD` | Neo4j 账号 | `neo4j` / `...` |
+| `TCM_API_BASE` | 前端调用的后端地址（可选） | `http://127.0.0.1:8000` |
 
 ## 许可证
 
-本项目采用 MIT 许可证，详见 [LICENSE](LICENSE) 文件。
+MIT，详见 [LICENSE](LICENSE)。

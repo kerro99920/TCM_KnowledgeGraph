@@ -1,17 +1,14 @@
-"""API request and response schemas."""
+"""API 请求/响应模型。"""
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
-
-T = TypeVar("T")
+from pydantic import BaseModel, Field
 
 
 class HealthStatus(str, Enum):
-    """Health check status values."""
+    """健康检查状态。"""
 
     HEALTHY = "healthy"
     DEGRADED = "degraded"
@@ -19,105 +16,56 @@ class HealthStatus(str, Enum):
 
 
 class HealthResponse(BaseModel):
-    """Health check response."""
+    """健康检查响应。"""
 
-    status: HealthStatus = Field(description="Overall health status")
-    version: str = Field(description="Application version")
-    timestamp: datetime = Field(default_factory=datetime.now, description="Check timestamp")
-    components: dict[str, HealthStatus] = Field(
-        default_factory=dict, description="Component health statuses"
-    )
-
-
-class PaginatedResponse(BaseModel, Generic[T]):
-    """Generic paginated response wrapper."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    items: list[T] = Field(description="List of items")
-    total: int = Field(ge=0, description="Total number of items")
-    page: int = Field(ge=1, description="Current page number")
-    page_size: int = Field(ge=1, description="Items per page")
-    total_pages: int = Field(ge=0, description="Total number of pages")
-
-    @classmethod
-    def create(
-        cls, items: list[T], total: int, page: int, page_size: int
-    ) -> "PaginatedResponse[T]":
-        """Create a paginated response."""
-        total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
-        return cls(
-            items=items,
-            total=total,
-            page=page,
-            page_size=page_size,
-            total_pages=total_pages,
-        )
+    status: HealthStatus = Field(description="整体状态")
+    version: str = Field(description="应用版本")
+    timestamp: datetime = Field(default_factory=datetime.now)
+    components: dict[str, HealthStatus] = Field(default_factory=dict, description="组件状态")
 
 
 class SearchRequest(BaseModel):
-    """Search request parameters."""
+    """名称模糊检索请求。"""
 
-    query: str = Field(min_length=1, max_length=500, description="Search query")
-    entity_types: list[str] | None = Field(
-        default=None, description="Filter by entity types"
-    )
-    limit: int = Field(default=10, ge=1, le=100, description="Maximum results")
-    offset: int = Field(default=0, ge=0, description="Result offset")
-    use_embedding: bool = Field(default=True, description="Use vector similarity search")
+    query: str = Field(min_length=1, max_length=200, description="检索关键词")
+    entity_types: list[str] | None = Field(default=None, description="限定标签范围")
+    limit: int = Field(default=10, ge=1, le=100)
 
 
 class SearchResult(BaseModel):
-    """Single search result."""
+    """单条检索结果。"""
 
-    entity_type: str = Field(description="Type of entity (medicine/prescription/disease)")
-    entity_id: str = Field(description="Entity identifier")
-    name: str = Field(description="Entity name")
-    score: float = Field(ge=0, le=1, description="Relevance score")
-    snippet: str | None = Field(default=None, description="Matching text snippet")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    entity_type: str
+    entity_id: str
+    name: str
+    score: float = Field(ge=0, le=1)
 
 
 class EntityResponse(BaseModel):
-    """Generic entity response."""
+    """实体详情响应。"""
 
-    entity_type: str = Field(description="Type of entity")
-    entity_id: str = Field(description="Entity identifier")
-    data: dict[str, Any] = Field(description="Entity data")
-    related_entities: list[dict[str, Any]] = Field(
-        default_factory=list, description="Related entities from graph"
-    )
+    entity_type: str
+    entity_id: str
+    data: dict[str, Any]
+    related_entities: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GraphQueryRequest(BaseModel):
-    """Graph query request."""
+    """只读 Cypher 查询请求。"""
 
-    cypher: str | None = Field(default=None, description="Raw Cypher query")
-    natural_language: str | None = Field(
-        default=None, description="Natural language query to convert"
-    )
-    parameters: dict[str, Any] = Field(
-        default_factory=dict, description="Query parameters"
-    )
+    cypher: str = Field(min_length=1, description="Cypher 语句（仅只读）")
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphQueryResponse(BaseModel):
-    """Graph query response."""
+    """Cypher 查询响应。"""
 
-    nodes: list[dict[str, Any]] = Field(default_factory=list, description="Result nodes")
-    relationships: list[dict[str, Any]] = Field(
-        default_factory=list, description="Result relationships"
-    )
-    raw_results: list[dict[str, Any]] = Field(
-        default_factory=list, description="Raw query results"
-    )
-    generated_cypher: str | None = Field(
-        default=None, description="Generated Cypher query (if from NL)"
-    )
+    raw_results: list[dict[str, Any]] = Field(default_factory=list)
+    executed_cypher: str | None = Field(default=None, description="实际执行的语句（含 LIMIT 兜底）")
 
 
 class MessageRole(str, Enum):
-    """Chat message roles."""
+    """对话角色。"""
 
     USER = "user"
     ASSISTANT = "assistant"
@@ -125,36 +73,23 @@ class MessageRole(str, Enum):
 
 
 class ChatMessage(BaseModel):
-    """Single chat message."""
+    """单条对话消息。"""
 
-    role: MessageRole = Field(description="Message role")
-    content: str = Field(description="Message content")
-    timestamp: datetime = Field(default_factory=datetime.now, description="Message timestamp")
+    role: MessageRole
+    content: str
 
 
 class ChatRequest(BaseModel):
-    """Chat request."""
+    """问答请求。"""
 
-    message: str = Field(min_length=1, max_length=2000, description="User message")
-    history: list[ChatMessage] = Field(
-        default_factory=list, description="Conversation history"
-    )
-    use_knowledge_graph: bool = Field(
-        default=True, description="Whether to query knowledge graph"
-    )
-    stream: bool = Field(default=False, description="Enable streaming response")
+    message: str = Field(min_length=1, max_length=2000)
+    history: list[ChatMessage] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
-    """Chat response."""
+    """问答响应。"""
 
-    message: str = Field(description="Assistant response")
-    sources: list[dict[str, Any]] = Field(
-        default_factory=list, description="Knowledge sources used"
-    )
-    graph_query: str | None = Field(
-        default=None, description="Generated graph query"
-    )
-    confidence: float | None = Field(
-        default=None, ge=0, le=1, description="Response confidence score"
-    )
+    message: str
+    sources: list[dict[str, Any]] = Field(default_factory=list, description="图谱来源实体")
+    graph_query: str | None = Field(default=None, description="实际执行的 Cypher")
+    intent: str | None = Field(default=None, description="识别的问题意图")

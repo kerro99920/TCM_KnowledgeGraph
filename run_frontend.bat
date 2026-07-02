@@ -1,7 +1,6 @@
 @echo off
-echo Starting TCM Knowledge Graph Frontend...
-echo.
-echo Access at: http://localhost:8501
-echo.
-streamlit run frontend/app.py --server.port 8501
+rem 启动 Streamlit 前端（依赖 uv，无需手动装环境）
+cd /d %~dp0
+echo Frontend: http://localhost:8501  (backend must be running: run_api.bat)
+uv run --no-project --with "streamlit>=1.35" streamlit run frontend/app.py --server.port 8501
 pause

@@ -22,19 +22,12 @@ build/
 *~
 .DS_Store
 
-# Model files (too large, download separately)
-model/bge-m3/
+# Generated data (crawled text / extracted json)
+data/
+app/data/
 
-# Crawler data (can be regenerated)
-crawler/medicine_details/
-crawler/medicine_details_2/
-crawler/medicine_details_3/
-crawler/prescription_details/
-crawler/prescription_details_2/
-crawler/*.xlsx
-
-# Generated data
-extraction/*.json
+# uv
+.venv/
 
 # Testing and coverage
 .pytest_cache/

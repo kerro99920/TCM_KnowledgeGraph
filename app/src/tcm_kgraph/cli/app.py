@@ -59,11 +59,10 @@ def serve(
 
 
 @app.command()
-def chat(
-    use_kg: bool = typer.Option(True, "--kg/--no-kg", help="是否使用知识图谱"),
-) -> None:
-    """交互式对话模式"""
+def chat() -> None:
+    """交互式对话（与 API 同一条问答链路）"""
     import asyncio
+    from tcm_kgraph.agents.graph import run_tcm_agent
     from tcm_kgraph.core.dependencies import get_container, cleanup_container
 
     console.print("[bold green]中医知识图谱对话系统[/bold green]")
@@ -73,12 +72,10 @@ def chat(
         container = get_container()
 
         try:
-            if use_kg:
-                await container.neo4j_client.verify_connectivity()
-                console.print("[green]已连接到知识图谱[/green]\n")
+            await container.neo4j_client.verify_connectivity()
+            console.print("[green]已连接到知识图谱[/green]\n")
         except Exception as e:
-            console.print(f"[yellow]警告: 无法连接知识图谱 ({e})[/yellow]")
-            console.print("[yellow]将使用纯LLM模式[/yellow]\n")
+            console.print(f"[yellow]警告: 无法连接知识图谱 ({e})，检索将自动降级[/yellow]\n")
 
         history: list[dict[str, str]] = []
 
@@ -90,40 +87,30 @@ def chat(
 
             if question.lower() in ("quit", "exit", "q"):
                 break
-
             if not question.strip():
                 continue
 
             try:
-                # Simple LLM response
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的中医知识助手。请回答用户关于中医药的问题。",
-                    },
-                    *history,
-                    {"role": "user", "content": question},
-                ]
+                result = await run_tcm_agent(
+                    question=question,
+                    llm_client=container.llm_client,
+                    neo4j_client=container.neo4j_client,
+                    history=history,
+                )
+                console.print(f"\n[bold green]助手: [/bold green]{result['response']}\n")
+                if result.get("cypher_query"):
+                    console.print(f"[dim]Cypher: {result['cypher_query']}[/dim]\n")
 
-                response = await container.llm_client.chat(messages)
-
-                console.print(f"\n[bold green]助手: [/bold green]{response}\n")
-
-                # Update history
                 history.append({"role": "user", "content": question})
-                history.append({"role": "assistant", "content": response})
-
-                # Keep only last 10 messages
-                if len(history) > 10:
-                    history = history[-10:]
-
+                history.append({"role": "assistant", "content": result["response"]})
+                history = history[-10:]
             except Exception as e:
                 console.print(f"[red]错误: {e}[/red]\n")
 
         await cleanup_container()
 
-    console.print("[dim]再见![/dim]")
     asyncio.run(run_chat())
+    console.print("[dim]再见![/dim]")
 
 
 if __name__ == "__main__":

@@ -128,9 +128,3 @@ class LLMAPIError(LLMError):
             details["model"] = model
         super().__init__(message, details)
         self.model = model
-
-
-class EmbeddingError(LLMError):
-    """Raised when embedding generation fails."""
-
-    pass

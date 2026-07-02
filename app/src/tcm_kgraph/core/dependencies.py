@@ -9,7 +9,6 @@ from tcm_kgraph.core.logging import get_logger
 if TYPE_CHECKING:
     from tcm_kgraph.database.neo4j_client import Neo4jClient
     from tcm_kgraph.llm.client import LLMClient
-    from tcm_kgraph.llm.embeddings import EmbeddingModel
 
 logger = get_logger(__name__)
 
@@ -26,7 +25,6 @@ class Container:
     settings: Settings = field(default_factory=get_settings)
     _neo4j_client: "Neo4jClient | None" = field(default=None, repr=False)
     _llm_client: "LLMClient | None" = field(default=None, repr=False)
-    _embedding_model: "EmbeddingModel | None" = field(default=None, repr=False)
 
     @property
     def neo4j_client(self) -> "Neo4jClient":
@@ -59,29 +57,12 @@ class Container:
             logger.info("LLM client initialized")
         return self._llm_client
 
-    @property
-    def embedding_model(self) -> "EmbeddingModel":
-        """Get or create embedding model."""
-        if self._embedding_model is None:
-            from tcm_kgraph.llm.embeddings import EmbeddingModel
-
-            self._embedding_model = EmbeddingModel(
-                model_path=self.settings.embedding_model_path,
-                device=self.settings.embedding_device,
-            )
-            logger.info("Embedding model initialized")
-        return self._embedding_model
-
     async def close(self) -> None:
         """Close all managed resources."""
         if self._neo4j_client is not None:
             await self._neo4j_client.close()
             self._neo4j_client = None
             logger.info("Neo4j client closed")
-
-        if self._embedding_model is not None:
-            self._embedding_model = None
-            logger.info("Embedding model released")
 
         if self._llm_client is not None:
             self._llm_client = None

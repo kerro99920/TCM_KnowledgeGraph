@@ -1,12 +1,5 @@
-"""Data models for TCM Knowledge Graph."""
+"""API 数据模型（DTO）。"""
 
-from tcm_kgraph.models.entities import (
-    Disease,
-    Medicine,
-    MedicineProperty,
-    Prescription,
-    Symptom,
-)
 from tcm_kgraph.models.schemas import (
     ChatMessage,
     ChatRequest,
@@ -15,19 +8,11 @@ from tcm_kgraph.models.schemas import (
     GraphQueryRequest,
     GraphQueryResponse,
     HealthResponse,
-    PaginatedResponse,
     SearchRequest,
     SearchResult,
 )
 
 __all__ = [
-    # Entities
-    "Medicine",
-    "MedicineProperty",
-    "Prescription",
-    "Disease",
-    "Symptom",
-    # Schemas
     "HealthResponse",
     "SearchRequest",
     "SearchResult",
@@ -37,5 +22,4 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "ChatMessage",
-    "PaginatedResponse",
 ]

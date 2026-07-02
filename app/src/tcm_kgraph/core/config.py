@@ -16,17 +16,23 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
-    # LLM Configuration
-    llm_api_key: SecretStr = Field(description="API key for LLM service")
+    # LLM 配置（环境变量名与 .env.example 对齐）
+    llm_api_key: SecretStr = Field(
+        description="API key for LLM service",
+        validation_alias="MODEL_API_KEY",
+    )
     llm_base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
         description="Base URL for LLM API",
+        validation_alias="MODEL_BASE_URL",
     )
     llm_model: str = Field(
-        default="qwen-plus",
+        default="qwen3-max",
         description="LLM model name",
+        validation_alias="MODEL_NAME",
     )
     llm_temperature: float = Field(
         default=0.7,
@@ -53,16 +59,6 @@ class Settings(BaseSettings):
     neo4j_database: str = Field(
         default="neo4j",
         description="Neo4j database name",
-    )
-
-    # Embedding Model Configuration
-    embedding_model_path: Path = Field(
-        default=Path("model/bge-m3"),
-        description="Path to BGE-M3 embedding model",
-    )
-    embedding_device: str = Field(
-        default="cpu",
-        description="Device for embedding model (cpu/cuda)",
     )
 
     # Crawler Configuration
@@ -108,7 +104,7 @@ class Settings(BaseSettings):
         description="Base data directory",
     )
 
-    @field_validator("embedding_model_path", "data_dir", mode="before")
+    @field_validator("data_dir", mode="before")
     @classmethod
     def convert_to_path(cls, v: str | Path) -> Path:
         """Convert string paths to Path objects."""

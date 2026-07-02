@@ -1,38 +1,21 @@
-"""Node implementations for LangGraph workflows."""
+"""LangGraph 问答工作流节点实现。"""
 
 from typing import Any, Literal
 
 from tcm_kgraph.agents.state import AgentState
 from tcm_kgraph.core.logging import get_logger
+from tcm_kgraph.database.cypher_guard import CypherGuardError, guard_readonly_cypher
 from tcm_kgraph.extraction.prompts import ExtractionPrompts
-
+from tcm_kgraph.graph_schema import normalize_entity_name, safe_label
 
 logger = get_logger(__name__)
 
 
-async def route_question(
-    state: AgentState,
-    llm_client: Any,
-) -> AgentState:
-    """
-    Route question to appropriate processing path.
-
-    Analyzes the question intent to determine whether knowledge
-    graph retrieval is needed.
-
-    Args:
-        state: Current agent state
-        llm_client: LLM client instance
-
-    Returns:
-        Updated state with intent and routing decision
-    """
-    question = state.question
-
-    # Simple intent classification
+async def route_question(state: AgentState, llm_client: Any) -> AgentState:
+    """意图路由：判断是否需要查询知识图谱。"""
     routing_prompt = f"""分析以下中医相关问题的类型：
 
-问题：{question}
+问题：{state.question}
 
 请判断这个问题的类型：
 1. knowledge_query - 需要查询知识图谱的事实性问题（如：某药的功效、某方剂的组成）
@@ -43,75 +26,31 @@ async def route_question(
 只返回类型名称，不要其他内容。"""
 
     try:
-        intent = await llm_client.generate(routing_prompt)
-        intent = intent.strip().lower()
-
-        # Determine if retrieval is needed
-        should_retrieve = intent in ["knowledge_query", "comparison", "recommendation"]
-
-        logger.debug(f"Question routed: intent={intent}, should_retrieve={should_retrieve}")
-
-        return AgentState(
-            **state.model_dump(),
-            intent=intent,
-            should_retrieve=should_retrieve,
-        )
+        intent = (await llm_client.generate(routing_prompt)).strip().lower()
+        need = intent in ("knowledge_query", "comparison", "recommendation")
+        return state.model_copy(update={"intent": intent, "should_retrieve": need})
     except Exception as e:
-        logger.error(f"Question routing failed: {e}")
-        return AgentState(
-            **state.model_dump(),
-            intent="knowledge_query",
-            should_retrieve=True,
-        )
+        logger.error(f"意图路由失败: {e}")
+        return state.model_copy(update={"intent": "knowledge_query", "should_retrieve": True})
 
 
-async def extract_entities(
-    state: AgentState,
-    llm_client: Any,
-) -> AgentState:
-    """
-    Extract entities from the user question.
-
-    Identifies TCM entities mentioned in the question for
-    knowledge graph querying.
-
-    Args:
-        state: Current agent state
-        llm_client: LLM client instance
-
-    Returns:
-        Updated state with extracted entities
-    """
-    question = state.question
-
-    extraction_prompt = f"""从以下中医问题中提取实体：
-
-问题：{question}
-
-请识别所有中医相关实体（中药、方剂、疾病、症状等），以JSON格式返回：
-```json
-{{
-  "entities": [
-    {{"name": "黄芪", "type": "Medicine"}},
-    {{"name": "气虚", "type": "Symptom"}}
-  ]
-}}
-```
-
-只返回JSON，不要其他内容。"""
-
+async def extract_entities(state: AgentState, llm_client: Any) -> AgentState:
+    """从问题中识别实体并做名称归一化（别名对齐）。"""
     try:
-        result = await llm_client.extract_json(extraction_prompt)
-        entities = result.get("entities", [])
-        logger.debug(f"Extracted {len(entities)} entities from question")
-
-        return AgentState(
-            **state.model_dump(),
-            entities=entities,
+        result = await llm_client.extract_json(
+            ExtractionPrompts.question_entities(state.question)
         )
+        entities = []
+        for e in result.get("entities", []):
+            name = normalize_entity_name(e.get("name") or "")
+            if not name:
+                continue
+            entities.append({"name": name, "type": (e.get("type") or "").strip()})
+        logger.debug(f"识别实体 {len(entities)} 个")
+        return state.model_copy(update={"entities": entities})
     except Exception as e:
-        logger.error(f"Entity extraction failed: {e}")
-        return AgentState(**state.model_dump(), entities=[])
+        logger.error(f"实体识别失败: {e}")
+        return state.model_copy(update={"entities": []})
 
 
 async def retrieve_knowledge(
@@ -119,172 +58,107 @@ async def retrieve_knowledge(
     neo4j_client: Any,
     llm_client: Any,
 ) -> AgentState:
-    """
-    Retrieve relevant knowledge from the graph database.
-
-    Generates Cypher queries based on extracted entities and
-    executes them against Neo4j.
-
-    Args:
-        state: Current agent state
-        neo4j_client: Neo4j client instance
-        llm_client: LLM client instance
-
-    Returns:
-        Updated state with graph results and context
-    """
+    """Text2Cypher 检索：生成 → 安全校验 → 执行；失败则按实体名精确检索兜底。"""
     if not state.should_retrieve:
         return state
 
-    entities = state.entities
-    question = state.question
-
-    # Generate Cypher query
-    prompts = ExtractionPrompts()
-    cypher_prompt = prompts.QUESTION_TO_CYPHER.format(question=question)
-
+    # 主路径：LLM 生成 Cypher + 只读校验
     try:
-        result = await llm_client.extract_json(cypher_prompt)
-        cypher = result.get("cypher", "")
-
-        if cypher:
-            # Execute query
-            graph_results = await neo4j_client.execute(cypher)
-            logger.debug(f"Graph query returned {len(graph_results)} results")
-
-            # Format context
-            context = _format_graph_results(graph_results)
-
-            return AgentState(
-                **state.model_dump(),
-                cypher_query=cypher,
-                graph_results=graph_results,
-                context=context,
-            )
-
-    except Exception as e:
-        logger.error(f"Knowledge retrieval failed: {e}")
-
-    # Fallback: query by entity names
-    all_results: list[dict[str, Any]] = []
-    for entity in entities:
-        name = entity.get("name", "")
-        entity_type = entity.get("type", "")
-
-        if entity_type == "Medicine":
-            query = "MATCH (n:Medicine) WHERE n.name = $name RETURN n LIMIT 1"
-        elif entity_type == "Prescription":
-            query = "MATCH (n:Prescription) WHERE n.name = $name RETURN n LIMIT 1"
-        else:
-            query = "MATCH (n) WHERE n.name = $name RETURN n LIMIT 1"
-
-        try:
-            results = await neo4j_client.execute(query, {"name": name})
-            all_results.extend(results)
-        except Exception:
-            pass
-
-    context = _format_graph_results(all_results)
-
-    return AgentState(
-        **state.model_dump(),
-        graph_results=all_results,
-        context=context,
-    )
-
-
-async def generate_response(
-    state: AgentState,
-    llm_client: Any,
-) -> AgentState:
-    """
-    Generate final response using LLM.
-
-    Combines context from knowledge graph with conversation
-    history to generate a helpful response.
-
-    Args:
-        state: Current agent state
-        llm_client: LLM client instance
-
-    Returns:
-        Updated state with generated response
-    """
-    question = state.question
-    context = state.context
-
-    prompts = ExtractionPrompts()
-
-    if context:
-        # Response with knowledge graph context
-        prompt = prompts.TCM_QA_SYSTEM.format(
-            context=context,
-            question=question,
+        result = await llm_client.extract_json(
+            ExtractionPrompts.question_to_cypher(state.question)
         )
+        cypher = result.get("cypher", "")
+        if cypher:
+            safe_cypher = guard_readonly_cypher(cypher)
+            graph_results = await neo4j_client.execute(safe_cypher)
+            logger.debug(f"Cypher 查询返回 {len(graph_results)} 条")
+            if graph_results:
+                return state.model_copy(update={
+                    "cypher_query": safe_cypher,
+                    "graph_results": graph_results,
+                    "context": _format_graph_results(graph_results),
+                })
+    except CypherGuardError as e:
+        logger.warning(f"生成的 Cypher 未通过安全校验: {e}")
+    except Exception as e:
+        logger.error(f"Text2Cypher 检索失败: {e}")
+
+    # 兜底路径：已归一化实体名的邻域检索
+    all_results: list[dict[str, Any]] = []
+    for entity in state.entities:
+        name = entity.get("name", "")
+        try:
+            label = safe_label(entity.get("type", ""))
+            query = (
+                f"MATCH (n:{label} {{name: $name}}) "
+                "OPTIONAL MATCH (n)-[r]->(m) "
+                "RETURN n, labels(n) AS labels, "
+                "collect({rel: type(r), target: m.name})[..20] AS relations"
+            )
+        except ValueError:
+            query = (
+                "MATCH (n {name: $name}) "
+                "OPTIONAL MATCH (n)-[r]->(m) "
+                "RETURN n, labels(n) AS labels, "
+                "collect({rel: type(r), target: m.name})[..20] AS relations "
+                "LIMIT 3"
+            )
+        try:
+            all_results.extend(await neo4j_client.execute(query, {"name": name}))
+        except Exception as e:
+            logger.warning(f"实体兜底检索失败 {name}: {e}")
+
+    return state.model_copy(update={
+        "graph_results": all_results,
+        "context": _format_graph_results(all_results),
+    })
+
+
+async def generate_response(state: AgentState, llm_client: Any) -> AgentState:
+    """基于图谱上下文生成最终回答。"""
+    if state.context:
+        prompt = ExtractionPrompts.qa(context=state.context, question=state.question)
     else:
-        # General response without specific context
         prompt = f"""你是一个专业的中医知识助手。请回答以下问题：
 
-问题：{question}
+问题：{state.question}
 
 请提供准确、专业的回答。如果不确定，请明确说明。"""
 
     try:
         response = await llm_client.generate(prompt)
-        logger.debug("Response generated successfully")
 
-        # Extract sources from graph results
         sources = []
         for result in state.graph_results:
             if isinstance(result, dict):
                 for value in result.values():
                     if isinstance(value, dict) and "name" in value:
-                        sources.append({
-                            "name": value.get("name"),
-                            "type": value.get("type", "Entity"),
-                        })
+                        sources.append({"name": value.get("name")})
 
-        return AgentState(
-            **state.model_dump(),
-            response=response,
-            sources=sources,
-        )
+        return state.model_copy(update={"response": response, "sources": sources})
     except Exception as e:
-        logger.error(f"Response generation failed: {e}")
-        return AgentState(
-            **state.model_dump(),
-            response="抱歉，生成回答时出现错误。请稍后重试。",
-            error=str(e),
-        )
+        logger.error(f"回答生成失败: {e}")
+        return state.model_copy(update={
+            "response": "抱歉，生成回答时出现错误。请稍后重试。",
+            "error": str(e),
+        })
 
 
 def should_retrieve(state: AgentState) -> Literal["retrieve", "respond"]:
-    """
-    Conditional edge function to decide retrieval path.
-
-    Args:
-        state: Current agent state
-
-    Returns:
-        Next node name
-    """
-    if state.should_retrieve:
-        return "retrieve"
-    return "respond"
+    """条件边：是否走检索。"""
+    return "retrieve" if state.should_retrieve else "respond"
 
 
 def _format_graph_results(results: list[dict[str, Any]]) -> str:
-    """Format graph query results as context string."""
+    """将查询结果格式化为 LLM 上下文文本。"""
     if not results:
         return ""
 
     lines = ["知识图谱查询结果：", ""]
-
     for i, result in enumerate(results, 1):
         lines.append(f"结果 {i}:")
         for key, value in result.items():
             if isinstance(value, dict):
-                # Format node properties
                 props = []
                 for k, v in value.items():
                     if v and k not in ("raw_text", "embedding"):
@@ -294,7 +168,15 @@ def _format_graph_results(results: list[dict[str, Any]]) -> str:
                 if props:
                     lines.append(f"  {key}:")
                     lines.extend(props)
-            else:
+            elif isinstance(value, list):
+                items = [
+                    f"{d.get('rel')}→{d.get('target')}"
+                    for d in value
+                    if isinstance(d, dict) and d.get("rel")
+                ]
+                if items:
+                    lines.append(f"  {key}: {'；'.join(items)}")
+            elif value:
                 lines.append(f"  {key}: {value}")
         lines.append("")
 
